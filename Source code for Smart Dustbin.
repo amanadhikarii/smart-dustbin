@@ -1,0 +1,186 @@
+# Smart-Dustbin
+The smart dustbin uses an ESP32 microcontroller with an ultrasonic sensor to detect objects and automatically open a servo-controlled lid. It includes a buzzer for alerts, LEDs for status, a DHT11 sensor for temperature and humidity, and an I2C LCD for real-time display.
+
+#include <ESP32Servo.h> 
+#include <DHT.h> 
+#include <Wire.h> 
+#include <LiquidCrystal_I2C.h> 
+ 
+// === Pins === 
+const int trigPin = 27;        // Hand detection - Trigger 
+const int echoPin = 26;        // Hand detection - Echo 
+const int trigPinLevel = 25;   // Level detection - Trigger 
+const int echoPinLevel = 33;   // Level detection - Echo 
+const int servoPin = 19;       // Servo motor 
+const int buzzerPin = 18;      // Buzzer 
+const int redLedPin = 21;      // Red LED 
+const int greenLedPin = 22;    // Green LED 
+#define DHT11_PIN  4           // DHT11 sensor pin on GPIO4 
+ 
+// === Objects === 
+Servo myServo; 
+DHT dht11(DHT11_PIN, DHT11); 
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Adjust I2C address if needed 
+ 
+// === Custom I2C Pin Definitions ===
+
+#define SDA_PIN 32      // Custom SDA pin (GPIO 32) 
+#define SCL_PIN 14      // Custom SCL pin (GPIO 14) 
+ 
+// === States === 
+bool lidOpen = false; 
+unsigned long lastUpdateTimeDistance = 0; 
+unsigned long lastUpdateTimeTempHumidity = 0; 
+const unsigned long updateIntervalDistance = 5000; 
+const unsigned long updateIntervalTempHumidity = 10000; 
+ 
+// === Setup === 
+void setup() { 
+  Serial.begin(115200); 
+  Wire.begin(SDA_PIN, SCL_PIN); 
+ 
+  pinMode(trigPin, OUTPUT); 
+  pinMode(echoPin, INPUT); 
+  pinMode(trigPinLevel, OUTPUT); 
+  pinMode(echoPinLevel, INPUT); 
+  pinMode(buzzerPin, OUTPUT); 
+  pinMode(redLedPin, OUTPUT); 
+  pinMode(greenLedPin, OUTPUT);
+    myServo.attach(servoPin); 
+  myServo.write(0); // Lid starts closed 
+ 
+  dht11.begin(); 
+ 
+  lcd.begin(16, 2); 
+  lcd.backlight(); 
+  lcd.setCursor(0, 0); 
+  lcd.print("Smart Dustbin"); 
+  delay(2000); 
+  lcd.clear(); 
+} 
+ 
+// === Function to read distance === 
+float getDistance(int trig, int echo) { 
+  digitalWrite(trig, LOW); 
+  delayMicroseconds(2); 
+  digitalWrite(trig, HIGH); 
+  delayMicroseconds(10); 
+  digitalWrite(trig, LOW); 
+ 
+  long duration = pulseIn(echo, HIGH, 30000); // 30ms timeout 
+  return duration * 0.034 / 2; 
+} 
+ 
+// === Function to calculate bin level percentage === 
+float calculateBinLevelPercentage(float distance, float maxDistance) { 
+  return ((maxDistance - distance) / maxDistance) * 100; 
+} 
+ 
+// === Main loop === 
+void loop() { 
+  float handDistance = getDistance(trigPin, echoPin); 
+  float levelDistance = getDistance(trigPinLevel, echoPinLevel); 
+  float maxDistance = 25.0; 
+  float binLevelPercentage = calculateBinLevelPercentage(levelDistance, maxDistance); 
+ 
+  float humi  = dht11.readHumidity(); 
+  float tempC = dht11.readTemperature(); 
+ 
+  Serial.print("Hand Distance: "); 
+  Serial.print(handDistance); 
+  Serial.println(" cm"); 
+ 
+  Serial.print("Dustbin Level Distance: "); 
+  Serial.print(levelDistance); 
+ Serial.println(" cm"); 
+ 
+  if (isnan(tempC) || isnan(humi)) { 
+    Serial.println("Failed to read from DHT11 sensor!"); 
+  } else { 
+    Serial.print("Humidity: "); 
+    Serial.print(humi); 
+    Serial.print("%  |  "); 
+    Serial.print("Temperature: "); 
+    Serial.print(tempC); 
+    Serial.println("°C"); 
+  } 
+ 
+  unsigned long currentMillis = millis(); 
+ 
+  // Open/close lid based on hand detection 
+  if (handDistance > 0 && handDistance < 20 && !lidOpen) { 
+    Serial.println("Hand detected. Opening lid..."); 
+    myServo.write(90); 
+    lidOpen = true; 
+  } else if ((handDistance >= 20 || handDistance <= 0) && lidOpen) { 
+    Serial.println("Hand removed. Closing lid..."); 
+    myServo.write(0); 
+      lidOpen = false; 
+    lcd.clear();  // Clear LCD when lid closes 
+  } 
+ 
+  // === Display info only when lid is open === 
+  if (lidOpen) { 
+    if (currentMillis - lastUpdateTimeDistance >= updateIntervalDistance) { 
+      lastUpdateTimeDistance = currentMillis; 
+      lcd.clear(); 
+      lcd.setCursor(0, 0); 
+      lcd.print("Hand: "); 
+      lcd.print(handDistance); 
+      lcd.print(" cm"); 
+      lcd.setCursor(0, 1); 
+      lcd.print("Lvl: "); 
+      lcd.print(binLevelPercentage); 
+      lcd.print("%"); 
+    } 
+ 
+  if (currentMillis - lastUpdateTimeTempHumidity >=     updateIntervalTempHumidity) { 
+      lastUpdateTimeTempHumidity = currentMillis; 
+      lcd.clear(); 
+      lcd.setCursor(0, 0);
+ lcd.print("Temp: "); 
+      lcd.print(tempC); 
+      lcd.print("C"); 
+      lcd.setCursor(0, 1); 
+      lcd.print("Hum: "); 
+      lcd.print(humi); 
+      lcd.print("%"); 
+    } 
+  } 
+ 
+  // === Bin Level Alerts (Serial + LEDs/Buzzer) === 
+  if (binLevelPercentage >= 90) { 
+    Serial.println("⚠ Dustbin is FULL!"); 
+    digitalWrite(greenLedPin, LOW); 
+ 
+   for (int i = 0; i < 3; i++) { 
+      digitalWrite(redLedPin, HIGH); 
+      delay(300); 
+      digitalWrite(redLedPin, LOW); 
+      delay(300); 
+    }
+    for (int i = 0; i < 3; i++) { 
+      digitalWrite(buzzerPin, HIGH); 
+      delay(300); 
+      digitalWrite(buzzerPin, LOW); 
+      delay(300); 
+    } 
+  } else if (binLevelPercentage >= 50) { 
+    Serial.println("    Dustbin is PARTIALLY FULL"); 
+    digitalWrite(buzzerPin, LOW); 
+    digitalWrite(redLedPin, LOW); 
+    digitalWrite(greenLedPin, LOW); 
+  } else { 
+    Serial.println("   Dustbin is EMPTY"); 
+    digitalWrite(buzzerPin, LOW); 
+    digitalWrite(redLedPin, LOW); 
+    for (int i = 0; i < 3; i++) { 
+      digitalWrite(greenLedPin, HIGH); 
+      delay(300); 
+      digitalWrite(greenLedPin, LOW); 
+      delay(300); 
+    } 
+  }
+   delay(300); // Slight delay for stability 
+}
+
